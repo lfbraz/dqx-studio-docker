@@ -16,7 +16,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 
 from .cache import app_cache
 from .common.authentication.sql import SQLAuthentication
-from .common.authorization import UserRole, get_user_email
+from .common.authorization import UserRole, default_auth_fallback_enabled, get_user_email
 from .config import AppConfig, conf, get_sql_warehouse_path
 from .demo.manifest import SOURCE_SCHEMA as DEMO_SOURCE_SCHEMA
 from .demo.status import DemoStatusStore
@@ -144,16 +144,16 @@ async def get_obo_ws(
     The token is hashed before use as a cache key so raw tokens are never
     stored in the key space.
 
-    Local-dev fallback: the platform always injects the header and authenticates
+    Default-auth fallback: the platform always injects the header and authenticates
     the app via DATABRICKS_CLIENT_ID/SECRET — it never has a CLI profile or PAT.
     So when the header is absent but a profile/token is configured (loaded from
-    app/.env for local dev), we are running locally and fall back to the SDK
-    default auth (that same profile) so OBO endpoints work without a header. This
-    cannot trigger in production, where no profile/PAT is present.
+    app/.env for local dev), or DQX_DEFAULT_AUTH_FALLBACK=1 is set for a standalone
+    container, we fall back to the SDK default auth so OBO endpoints work without a
+    header. This cannot trigger in production (see default_auth_fallback_enabled).
     """
     if not token:
         profile = os.environ.get("DATABRICKS_CONFIG_PROFILE")
-        if profile or os.environ.get("DATABRICKS_TOKEN"):
+        if default_auth_fallback_enabled():
             logger.warning(
                 "X-Forwarded-Access-Token missing — falling back to local default auth "
                 "(profile=%s) for OBO. Local dev only: runs as your CLI identity, not an "

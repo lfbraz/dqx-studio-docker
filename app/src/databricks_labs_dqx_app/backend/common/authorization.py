@@ -66,6 +66,30 @@ def get_permissions_for_role(role: UserRole) -> list[str]:
     return PERMISSIONS.get(role, [])
 
 
+DEFAULT_AUTH_FALLBACK_ENV = "DQX_DEFAULT_AUTH_FALLBACK"
+
+
+def default_auth_fallback_enabled() -> bool:
+    """Return whether requests without platform identity headers may use the SDK default auth.
+
+    On Databricks Apps the proxy always injects the X-Forwarded-* headers and the app
+    authenticates via DATABRICKS_CLIENT_ID/SECRET with no CLI profile or PAT, so this is
+    never true there. It is true for local development with a CLI profile or PAT, and
+    when DQX_DEFAULT_AUTH_FALLBACK=1 is set explicitly for a standalone container that
+    authenticates as a service principal via DATABRICKS_CLIENT_ID/SECRET. Every request
+    then runs as that single identity, so only enable the flag where untrusted callers
+    cannot reach the app.
+
+    Returns:
+        True when header-less requests fall back to the SDK default auth.
+    """
+    return bool(
+        os.environ.get("DATABRICKS_CONFIG_PROFILE")
+        or os.environ.get("DATABRICKS_TOKEN")
+        or os.environ.get(DEFAULT_AUTH_FALLBACK_ENV) == "1"
+    )
+
+
 def get_user_email(
     x_forwarded_email: Annotated[str | None, Header()] = None,
     x_forwarded_access_token: Annotated[str | None, Header()] = None,
@@ -91,11 +115,11 @@ def get_user_email(
         except Exception:
             logger.warning("Failed to resolve user email from OBO token", exc_info=True)
 
-    # Local-dev fallback: no X-Forwarded-* headers are present locally. When a CLI
-    # profile / token is configured (loaded from app/.env), derive the email from the
-    # SDK default auth — same gate as get_obo_ws. Cannot trigger in production, which
-    # authenticates via DATABRICKS_CLIENT_ID/SECRET with no profile/PAT present.
-    if os.environ.get("DATABRICKS_CONFIG_PROFILE") or os.environ.get("DATABRICKS_TOKEN"):
+    # Default-auth fallback: no X-Forwarded-* headers are present outside Databricks
+    # Apps. When a CLI profile / token is configured (local dev) or the standalone
+    # flag is set, derive the email from the SDK default auth — same gate as
+    # get_obo_ws. Cannot trigger in production (see default_auth_fallback_enabled).
+    if default_auth_fallback_enabled():
         try:
             from databricks.sdk import WorkspaceClient
 

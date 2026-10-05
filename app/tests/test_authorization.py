@@ -4,6 +4,8 @@ Covers:
 - ``UserRole`` permission map shape (each role has a sane permission set).
 - ``RUNNER`` orthogonality vs. the primary-role hierarchy.
 - ``get_user_email`` header trust, OBO fallback, and 401 behaviour.
+- ``default_auth_fallback_enabled`` gating, shared by ``get_user_email`` and
+  ``dependencies.get_obo_ws``.
 """
 
 from unittest.mock import MagicMock, patch
@@ -12,12 +14,28 @@ import pytest
 from fastapi import HTTPException
 
 from databricks_labs_dqx_app.backend.common.authorization import (
+    DEFAULT_AUTH_FALLBACK_ENV,
     PERMISSIONS,
     ROLE_PRIORITY,
     UserRole,
+    default_auth_fallback_enabled,
     get_permissions_for_role,
     get_user_email,
 )
+from databricks_labs_dqx_app.backend.dependencies import get_obo_ws
+
+
+@pytest.fixture
+def no_default_auth_env(monkeypatch):
+    """Strip every variable that enables the default-auth fallback.
+
+    app/.env is loaded on package import, so a developer's local profile or
+    token would otherwise leak into these tests.
+    """
+    for name in ("DATABRICKS_CONFIG_PROFILE", "DATABRICKS_TOKEN", DEFAULT_AUTH_FALLBACK_ENV):
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
 
 # ---------------------------------------------------------------------------
 # Permission map
@@ -134,15 +152,26 @@ class TestGetUserEmail:
             assert email == "bob@example.com"
             mock_ws_cls.assert_called_once()
 
-    def test_returns_401_when_neither_provided(self, monkeypatch):
-        # The local-dev fallback (DATABRICKS_CONFIG_PROFILE / DATABRICKS_TOKEN)
-        # is loaded from app/.env on package import, so strip it here to
-        # exercise the pure "no identity" path the test name describes.
-        monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    def test_returns_401_when_neither_provided(self, no_default_auth_env):
+        # The fallback variables are stripped to exercise the pure
+        # "no identity" path the test name describes.
         with pytest.raises(HTTPException) as excinfo:
             get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
         assert excinfo.value.status_code == 401
+
+    def test_fallback_flag_resolves_email_from_default_auth(self, no_default_auth_env):
+        # Standalone container: SP credentials in env + explicit opt-in flag.
+        no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, "1")
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_ID", "sp-app-id")
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+        with patch("databricks.sdk.WorkspaceClient") as mock_ws_cls:
+            mock_user = MagicMock()
+            mock_user.user_name = "sp-app-id"
+            mock_ws_cls.return_value.current_user.me.return_value = mock_user
+
+            email = get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
+            assert email == "sp-app-id"
+            mock_ws_cls.assert_called_once_with()
 
     def test_returns_401_when_obo_lookup_fails_and_no_header(self):
         # Token present but SCIM call blows up → no email → 401.
@@ -162,3 +191,60 @@ class TestGetUserEmail:
             with pytest.raises(HTTPException) as excinfo:
                 get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
             assert excinfo.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# default_auth_fallback_enabled
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultAuthFallbackEnabled:
+    def test_disabled_without_profile_token_or_flag(self, no_default_auth_env):
+        assert default_auth_fallback_enabled() is False
+
+    def test_service_principal_credentials_alone_do_not_enable_it(self, no_default_auth_env):
+        # This is exactly the Databricks Apps production shape: the platform
+        # injects SP credentials and the X-Forwarded-* headers are mandatory.
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_ID", "sp-app-id")
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+        assert default_auth_fallback_enabled() is False
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("DATABRICKS_CONFIG_PROFILE", "dev"),
+            ("DATABRICKS_TOKEN", "dapi-test"),
+            (DEFAULT_AUTH_FALLBACK_ENV, "1"),
+        ],
+    )
+    def test_enabled_by_profile_token_or_flag(self, no_default_auth_env, name, value):
+        no_default_auth_env.setenv(name, value)
+        assert default_auth_fallback_enabled() is True
+
+    @pytest.mark.parametrize("value", ["0", "", "true", "yes"])
+    def test_flag_must_be_exactly_one(self, no_default_auth_env, value):
+        no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, value)
+        assert default_auth_fallback_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# dependencies.get_obo_ws (shares the default-auth gate)
+# ---------------------------------------------------------------------------
+
+
+class TestGetOboWsFallback:
+    async def test_rejects_headerless_request_without_fallback(self, no_default_auth_env):
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_ID", "sp-app-id")
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+        with pytest.raises(HTTPException) as excinfo:
+            await get_obo_ws(token=None)
+        assert excinfo.value.status_code == 401
+
+    async def test_fallback_flag_uses_default_auth(self, no_default_auth_env):
+        no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, "1")
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_ID", "sp-app-id")
+        no_default_auth_env.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+        with patch("databricks_labs_dqx_app.backend.dependencies.WorkspaceClient") as mock_ws_cls:
+            workspace = await get_obo_ws(token=None)
+        assert workspace is mock_ws_cls.return_value
+        mock_ws_cls.assert_called_once_with()

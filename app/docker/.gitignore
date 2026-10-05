@@ -1,0 +1,4 @@
+# Never commit local container config / secrets.
+.env
+# The template is safe to commit (app/.gitignore ignores .env.* by default).
+!.env.example

@@ -1,0 +1,32 @@
+# DQX Studio — local Docker Compose runner.
+#
+#   cd app/docker
+#   cp .env.example .env         # then fill in your values
+#   docker compose up --build    # http://localhost:8000
+#
+# The build context is the repository root (two levels up) because the image
+# vendors the parent databricks-labs-dqx library. See README.md for details.
+
+services:
+  dqx-studio:
+    build:
+      context: ../..
+      dockerfile: app/docker/Dockerfile
+      args:
+        # Package-registry proxies for the in-container build. Interpolated from
+        # the shell env and/or this directory's .env file. Leave empty on a
+        # network with public PyPI/npm access; set them where those are blocked
+        # (see .env.example). Empty values fall back to the public registries.
+        UV_INDEX_URL: "${UV_INDEX_URL:-}"
+        NPM_REGISTRY: "${NPM_REGISTRY:-}"
+    image: dqx-studio:local
+    container_name: dqx-studio
+    ports:
+      # host:container — change the host side if 8000 is taken locally.
+      - "8000:8000"
+    # All configuration, including the service principal's DATABRICKS_HOST /
+    # DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET, comes from environment
+    # variables — the same contract a cloud container platform uses.
+    env_file:
+      - .env
+    restart: unless-stopped

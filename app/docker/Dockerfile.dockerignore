@@ -1,0 +1,45 @@
+# Build-context ignore for app/docker/Dockerfile (context = repository root).
+# BuildKit honors this sibling file; patterns are relative to the context root.
+# Keeps the huge/irrelevant paths out of the build context so `docker build`
+# transfers only what the image actually needs.
+
+.git
+.github
+.isaac
+docs
+
+# Python virtualenvs / caches (rebuilt inside the image)
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/*.egg-info
+
+# Node + prior app builds (rebuilt inside the image)
+app/node_modules
+app/.build
+app/marketplace
+app/.databricks
+**/.turbo
+**/dist
+**/__dist__
+
+# Tests / fixtures not needed to build or run the app
+tests
+app/tests
+app/tasks/tests
+
+# Local env / secrets — never ship these into the image
+**/.env
+**/.env.*
+!app/docker/.env.example
+app/docker/.env
+.databrickscfg
+
+# Editor / OS cruft
+.vscode
+.idea
+**/.DS_Store
