@@ -143,6 +143,35 @@ docker compose run --rm dqx-studio python -c \
 
 It should print the SP's application id.
 
+## Task runner
+
+Profiling, dry runs, and scheduled runs execute in a Databricks *task-runner
+job*, and setup only completes (the app leaves the setup wizard) once that job
+**runs as a service principal different from the app's SP**
+(`DATABRICKS_CLIENT_ID`). Either:
+
+- **Reuse an existing job** — e.g. the task-runner job created by a
+  `make app-deploy`, which already runs as the bundle's task-runner SP. Set
+  `DQX_JOB_ID` to its id; `grant_sp_permissions.sh` then grants the app's SP
+  `CAN_MANAGE` on it, which setup needs to keep the job's wheels current.
+- **Let the app create it** — leave `DQX_JOB_ID` unset. The app creates the job
+  on first start; then set its **Run as** to a separate service principal in
+  the Jobs UI and select **Verify again** in the setup wizard.
+
+The task-runner SP needs these grants (the setup wizard lists any that are
+missing as ready-to-run SQL):
+
+```sql
+GRANT USE CATALOG ON CATALOG <catalog> TO `<runner-sp-app-id>`;
+GRANT USE SCHEMA, SELECT, MODIFY ON SCHEMA <catalog>.<schema> TO `<runner-sp-app-id>`;
+GRANT USE SCHEMA ON SCHEMA <catalog>.<tmp-schema> TO `<runner-sp-app-id>`;
+GRANT READ VOLUME ON VOLUME <catalog>.<schema>.<volume> TO `<runner-sp-app-id>`;
+```
+
+A bundle deployment grants its task-runner SP the schema and volume privileges;
+`USE CATALOG` is the one manual grant described in
+[`../DEPLOYMENT.md`](../DEPLOYMENT.md#the-use-catalog-prerequisite).
+
 ## Build & run
 
 ```bash
@@ -240,10 +269,9 @@ docker compose logs -f
 
 - **One identity** (with `DQX_DEFAULT_AUTH_FALLBACK=1`). Every request runs as
   the SP, so you can't test per-user permission differences.
-- **Profiler / dry-run / scheduled runs** submit a Databricks *task-runner job*.
-  Set `DQX_JOB_ID` in `.env` (and ensure the wheels volume is populated) to use
-  them; the SP also needs `CAN_MANAGE` on that job. Leave it unset to run the
-  rest of the app. The image does not build or ship the task-runner wheel.
+- **Task runner.** Setup needs a task-runner job that runs as a separate
+  service principal; see [Task runner](#task-runner). The image does not build
+  or ship the task-runner wheel.
 - **Single worker** is intentional — the in-process scheduler uses an exclusive
   file lock, so only one worker may drive it. Set `DQX_SCHEDULER_DISABLED=1` in
   `.env` to skip the scheduler locally.

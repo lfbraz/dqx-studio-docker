@@ -180,9 +180,7 @@ VOLUME_PATH=$(env_value DQX_WHEELS_VOLUME)
 CONF_CATALOG=$(env_value DQX_CATALOG)
 CONF_SCHEMA=$(env_value DQX_SCHEMA)
 TMP_SCHEMA=$(env_value DQX_TMP_SCHEMA)
-TMP_SCHEMA=${TMP_SCHEMA:-dqx_studio_tmp}
 GENIE_SCHEMA=$(env_value DQX_GENIE_SCHEMA)
-GENIE_SCHEMA=${GENIE_SCHEMA:-genie}
 LAKEBASE_ENDPOINT=$(env_value DQX_LAKEBASE_ENDPOINT)
 ADMIN_GROUP=$(env_value DQX_ADMIN_GROUP)
 ADMIN_GROUP=${ADMIN_GROUP:-admins}
@@ -199,6 +197,9 @@ JOB_ID=$(env_value DQX_JOB_ID)
 CATALOG=${BASH_REMATCH[1]}
 MAIN_SCHEMA=${BASH_REMATCH[2]}
 VOLUME_NAME=${BASH_REMATCH[3]}
+# Same defaults as AppConfig: sibling schemas are named after the volume's schema.
+TMP_SCHEMA=${TMP_SCHEMA:-${MAIN_SCHEMA}_tmp}
+GENIE_SCHEMA=${GENIE_SCHEMA:-${MAIN_SCHEMA}_genie}
 for pair in "catalog:$CATALOG" "schema:$MAIN_SCHEMA" "volume:$VOLUME_NAME" \
   "DQX_TMP_SCHEMA:$TMP_SCHEMA" "DQX_GENIE_SCHEMA:$GENIE_SCHEMA"; do
   require_identifier "${pair%%:*}" "${pair#*:}"
@@ -333,7 +334,7 @@ step "Task-runner job"
 if [[ -n $JOB_ID ]]; then
   apply "CAN_MANAGE on job $JOB_ID" jobs update-permissions "$JOB_ID" --json "$(acl_json CAN_MANAGE)"
 else
-  note "DQX_JOB_ID is not set — skipped (the app creates a job on first start if needed)"
+  note "DQX_JOB_ID is not set — skipped. The app creates the task-runner job on first start; setup then needs its run-as set to a separate service principal (README \"Task runner\")"
 fi
 
 # --- Summary --------------------------------------------------------------------
