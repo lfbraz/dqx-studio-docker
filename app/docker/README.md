@@ -117,17 +117,33 @@ docker build -f app/docker/Dockerfile -t dqx-studio:local \
 docker run --rm -p 8000:8000 --env-file app/docker/.env dqx-studio:local
 ```
 
-## Troubleshooting
+## Deploy to Azure Kubernetes Service
 
-| Symptom | Fix |
-|---|---|
-| `cannot configure default credentials` | `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, or `DATABRICKS_CLIENT_SECRET` is empty in `.env`. |
-| `invalid_client` | Wrong client id or secret. Create a new secret (step 2). |
-| UI stuck loading, API returns 401 | Add `DQX_DEFAULT_AUTH_FALLBACK=1` to `.env`. |
-| `database "…" does not exist` | Run `setup.sh`: it creates `DQX_LAKEBASE_DATABASE_NAME`. |
-| `must be owner of table …` | `DQX_LAKEBASE_SCHEMA` was created by another identity. Use the app SP's own schema (`dqx_studio_local`). |
-| `task_runner_run_as_missing` | Set `DQX_TASK_RUNNER_CLIENT_ID`, re-run the script, and select **Verify again**. |
-| Any other permission error, or you aren't an admin in the UI | Re-run the script and check its summary. |
+Needs the Azure CLI (`az login`) and `kubectl`. Run [Set up](#set-up) first.
+
+```bash
+./deploy_aks.sh -g <rg> -r <acr-name> -l <region> --dry-run   # preview
+./deploy_aks.sh -g <rg> -r <acr-name> -l <region>
+```
+
+The script creates the resource group, registry, and AKS cluster when missing,
+builds the image in ACR, stores `.env` as a Kubernetes Secret, and runs one
+replica. Re-run it to deploy code or `.env` changes.
+
+- **Region:** use the workspace's region. Lakebase latency makes a distant one slow.
+- **Access:** the Service is `ClusterIP`, so nothing is exposed. Open the UI with:
+
+  ```bash
+  az aks get-credentials -g <rg> -n dqx-studio
+  kubectl -n dqx-studio port-forward svc/dqx-studio 8000:8000
+  ```
+
+- **API server:** only `--api-server-ip-ranges` can reach it (default: your public
+  IP). After your IP changes, re-run the script to add the new one.
+- **Build:** only git-tracked files are uploaded, never `.env`. Without ACR Tasks,
+  use `--local-build` or `--image`.
+- **Image pulls:** with `AcrPull` on the cluster identity (granting it needs
+  Owner), the cluster uses it; otherwise a pull-only ACR token, renewed each run.
 
 ## Notes
 
