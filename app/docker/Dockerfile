@@ -14,7 +14,8 @@
 # See app/docker/README.md for configuration and the Databricks prerequisites.
 
 # ---------------------------------------------------------------------------
-# Stage 1 — builder: compile the UI, dump OpenAPI, assemble .build/, sync venv
+# Stage 1 — builder: compile the UI, dump OpenAPI, assemble .build/, build the
+# task-runner wheels, sync venv
 # ---------------------------------------------------------------------------
 FROM python:3.12-bookworm AS builder
 
@@ -70,6 +71,14 @@ WORKDIR /repo/app
 RUN yarn install --frozen-lockfile
 RUN python scripts/build_app.py
 
+# Wheels the task-runner job installs, as the bundle's artifacts build makes
+# them: the runner, plus databricks-labs-dqx from this checkout so the job runs
+# the same DQX as the backend. The app publishes both to the wheels volume at
+# startup. Built after build_app.py, which sweeps stale .build/*.whl.
+RUN rm -rf .build/tasks \
+    && uv build tasks/ --wheel --out-dir .build/tasks/ \
+    && uv build .. --wheel --out-dir .build/
+
 # Assemble the runtime tree at its final path (/app) and resolve the locked
 # environment there. Building the venv here (full toolchain available) means the
 # slim runtime stage needs no compilers and no network at start.
@@ -101,7 +110,7 @@ COPY --from=builder /app /app
 EXPOSE 8000
 
 # `/api/health` is dependency-free process liveness (no workspace/DB needed).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+HEALTHCHECK --interval=300s --timeout=5s --start-period=60s --retries=5 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"
 
 # Single worker: the in-process scheduler holds an exclusive file-lock lease,

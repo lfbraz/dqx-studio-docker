@@ -133,6 +133,26 @@ def test_grant_setup_admin_preserves_existing_management_access(
     manager.workspace.jobs.update_permissions.assert_not_called()
 
 
+def test_grant_setup_admin_recognizes_service_principal_owner(manager: TaskRunnerJobManager) -> None:
+    """A container's setup identity is the app SP; re-granting its owned job would remove the only owner."""
+    manager.workspace.jobs.get_permissions.return_value = JobPermissions(
+        object_id="42",
+        object_type="job",
+        access_control_list=[
+            JobAccessControlResponse(
+                service_principal_name="app-sp-client-id",
+                all_permissions=[
+                    JobPermission(inherited=False, permission_level=JobPermissionLevel.IS_OWNER),
+                ],
+            )
+        ],
+    )
+
+    manager.grant_setup_admin(42, "app-sp-client-id")
+
+    manager.workspace.jobs.update_permissions.assert_not_called()
+
+
 def test_configure_preserves_external_run_as(manager: TaskRunnerJobManager) -> None:
     """Reconciliation updates Studio-owned settings without overwriting the runner identity."""
     manager.workspace.jobs.get.return_value = job_with_run_as("runner-client-id")
