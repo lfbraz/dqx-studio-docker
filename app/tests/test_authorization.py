@@ -8,6 +8,7 @@ Covers:
   ``dependencies.get_obo_ws``.
 """
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ from databricks_labs_dqx_app.backend.common.authorization import (
     get_permissions_for_role,
     get_user_email,
 )
-from databricks_labs_dqx_app.backend.dependencies import get_obo_ws
+from databricks_labs_dqx_app.backend.dependencies import get_obo_ws, get_sp_ws
 
 
 @pytest.fixture
@@ -123,18 +124,18 @@ class TestGetPermissionsForRole:
 
 
 class TestGetUserEmail:
-    def test_returns_x_forwarded_email_when_present(self):
+    async def test_returns_x_forwarded_email_when_present(self):
         # NOTE: this captures *current* behaviour. The security audit (C-1)
         # flagged that this header is trusted without OBO cross-check; if
         # that gets fixed the test will need updating.
-        assert get_user_email(x_forwarded_email="alice@example.com") == "alice@example.com"
+        assert await get_user_email(x_forwarded_email="alice@example.com") == "alice@example.com"
 
-    def test_x_forwarded_email_wins_over_token(self):
+    async def test_x_forwarded_email_wins_over_token(self):
         # When both are present, the header is used directly (the OBO
         # fallback only fires when the header is missing).
         with patch("databricks.sdk.WorkspaceClient") as mock_ws_cls:
             assert (
-                get_user_email(
+                await get_user_email(
                     x_forwarded_email="alice@example.com",
                     x_forwarded_access_token="t0k3n",
                 )
@@ -142,24 +143,24 @@ class TestGetUserEmail:
             )
             mock_ws_cls.assert_not_called()
 
-    def test_falls_back_to_obo_token_resolution(self):
+    async def test_falls_back_to_obo_token_resolution(self):
         with patch("databricks.sdk.WorkspaceClient") as mock_ws_cls:
             mock_user = MagicMock()
             mock_user.user_name = "bob@example.com"
             mock_ws_cls.return_value.current_user.me.return_value = mock_user
 
-            email = get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
+            email = await get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
             assert email == "bob@example.com"
             mock_ws_cls.assert_called_once()
 
-    def test_returns_401_when_neither_provided(self, no_default_auth_env):
+    async def test_returns_401_when_neither_provided(self, no_default_auth_env):
         # The fallback variables are stripped to exercise the pure
         # "no identity" path the test name describes.
         with pytest.raises(HTTPException) as excinfo:
-            get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
+            await get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
         assert excinfo.value.status_code == 401
 
-    def test_fallback_flag_resolves_email_from_default_auth(self, no_default_auth_env):
+    async def test_fallback_flag_resolves_email_from_default_auth(self, no_default_auth_env):
         # Standalone container: SP credentials in env + explicit opt-in flag.
         no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, "1")
         no_default_auth_env.setenv("DATABRICKS_CLIENT_ID", "sp-app-id")
@@ -169,18 +170,46 @@ class TestGetUserEmail:
             mock_user.user_name = "sp-app-id"
             mock_ws_cls.return_value.current_user.me.return_value = mock_user
 
-            email = get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
+            email = await get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
             assert email == "sp-app-id"
             mock_ws_cls.assert_called_once_with()
 
-    def test_returns_401_when_obo_lookup_fails_and_no_header(self):
+    async def test_fallback_resolves_default_auth_once(self, no_default_auth_env):
+        # Building a client and calling SCIM costs seconds, so the fixed default-auth
+        # identity is resolved once instead of on every request.
+        no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, "1")
+        with patch("databricks.sdk.WorkspaceClient") as mock_ws_cls:
+            mock_ws_cls.return_value.current_user.me.return_value = MagicMock(user_name="sp-app-id")
+
+            first = await get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
+            await asyncio.sleep(0)  # let the cache's fire-and-forget write land, as between requests
+            second = await get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
+
+        assert first == second == "sp-app-id"
+        mock_ws_cls.assert_called_once_with()
+
+    async def test_fallback_does_not_cache_a_failed_lookup(self, no_default_auth_env):
+        no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, "1")
+        with patch("databricks.sdk.WorkspaceClient") as mock_ws_cls:
+            mock_ws_cls.return_value.current_user.me.side_effect = [
+                RuntimeError("scim down"),
+                MagicMock(user_name="sp-app-id"),
+            ]
+
+            with pytest.raises(HTTPException) as excinfo:
+                await get_user_email(x_forwarded_email=None, x_forwarded_access_token=None)
+            assert excinfo.value.status_code == 401
+            await asyncio.sleep(0)
+            assert await get_user_email(x_forwarded_email=None, x_forwarded_access_token=None) == "sp-app-id"
+
+    async def test_returns_401_when_obo_lookup_fails_and_no_header(self):
         # Token present but SCIM call blows up → no email → 401.
         with patch("databricks.sdk.WorkspaceClient", side_effect=RuntimeError("scim down")):
             with pytest.raises(HTTPException) as excinfo:
-                get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
+                await get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
             assert excinfo.value.status_code == 401
 
-    def test_obo_lookup_returns_user_with_no_user_name_yields_401(self):
+    async def test_obo_lookup_returns_user_with_no_user_name_yields_401(self):
         # If SCIM succeeds but `user_name` is None, the function falls
         # through to the 401 branch.
         with patch("databricks.sdk.WorkspaceClient") as mock_ws_cls:
@@ -189,7 +218,7 @@ class TestGetUserEmail:
             mock_ws_cls.return_value.current_user.me.return_value = mock_user
 
             with pytest.raises(HTTPException) as excinfo:
-                get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
+                await get_user_email(x_forwarded_email=None, x_forwarded_access_token="t0k3n")
             assert excinfo.value.status_code == 401
 
 
@@ -247,4 +276,16 @@ class TestGetOboWsFallback:
         with patch("databricks_labs_dqx_app.backend.dependencies.WorkspaceClient") as mock_ws_cls:
             workspace = await get_obo_ws(token=None)
         assert workspace is mock_ws_cls.return_value
+        mock_ws_cls.assert_called_once_with()
+
+    async def test_fallback_reuses_the_cached_service_principal_client(self, no_default_auth_env):
+        # A new WorkspaceClient per request costs ~1s of auth setup; header-less
+        # requests share the cached SP client instead.
+        no_default_auth_env.setenv(DEFAULT_AUTH_FALLBACK_ENV, "1")
+        with patch("databricks_labs_dqx_app.backend.dependencies.WorkspaceClient") as mock_ws_cls:
+            first = await get_obo_ws(token=None)
+            await asyncio.sleep(0)  # let the cache's fire-and-forget write land, as between requests
+            second = await get_obo_ws(token=None)
+            sp_workspace = await get_sp_ws()
+        assert first is second is sp_workspace
         mock_ws_cls.assert_called_once_with()

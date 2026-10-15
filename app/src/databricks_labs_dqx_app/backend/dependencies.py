@@ -160,7 +160,9 @@ async def get_obo_ws(
                 "arbitrary end user.",
                 profile or "(env)",
             )
-            return WorkspaceClient()  # default auth chain: app/.env profile / token
+            # Same default auth chain as the SP client, so reuse its cached instance:
+            # building a WorkspaceClient per request costs ~1s of auth setup.
+            return await get_sp_ws()
         logger.warning("OBO token is not provided in the header X-Forwarded-Access-Token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

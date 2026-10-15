@@ -1,9 +1,12 @@
+import asyncio
 import logging
 import os
 from enum import Enum
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+
+from ..cache import app_cache
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +93,36 @@ def default_auth_fallback_enabled() -> bool:
     )
 
 
-def get_user_email(
+_DEFAULT_AUTH_USER_TTL = 45 * 60  # 45 minutes, matching the cached SP WorkspaceClient
+
+
+def _current_user_name(token: str | None = None) -> str | None:
+    """Return the SCIM user name of the OBO *token*, or of the SDK default auth when None."""
+    from databricks.sdk import WorkspaceClient
+
+    workspace = WorkspaceClient(token=token, auth_type="pat") if token else WorkspaceClient()
+    return workspace.current_user.me().user_name
+
+
+@app_cache.cached("auth:default:user_name", ttl=_DEFAULT_AUTH_USER_TTL)
+async def _resolve_default_auth_user_name() -> str:
+    """Resolve the SDK default-auth identity once per TTL instead of once per request.
+
+    Building a WorkspaceClient and calling SCIM costs seconds per request, and the
+    identity is fixed for the process. Raises when the user name is missing so a
+    failed lookup is never cached.
+    """
+    user_name = await asyncio.to_thread(_current_user_name)
+    if not user_name:
+        raise ValueError("default auth identity has no user name")
+    logger.warning(
+        "X-Forwarded-Email/Access-Token missing — resolved email via local default auth (%s). Local dev only.",
+        user_name,
+    )
+    return user_name
+
+
+async def get_user_email(
     x_forwarded_email: Annotated[str | None, Header()] = None,
     x_forwarded_access_token: Annotated[str | None, Header()] = None,
 ) -> str:
@@ -105,13 +137,10 @@ def get_user_email(
 
     if x_forwarded_access_token:
         try:
-            from databricks.sdk import WorkspaceClient
-
-            ws = WorkspaceClient(token=x_forwarded_access_token, auth_type="pat")
-            me = ws.current_user.me()
-            if me.user_name:
-                logger.debug("Resolved user email from OBO token: %s", me.user_name)
-                return me.user_name
+            user_name = await asyncio.to_thread(_current_user_name, x_forwarded_access_token)
+            if user_name:
+                logger.debug("Resolved user email from OBO token: %s", user_name)
+                return user_name
         except Exception:
             logger.warning("Failed to resolve user email from OBO token", exc_info=True)
 
@@ -121,16 +150,7 @@ def get_user_email(
     # get_obo_ws. Cannot trigger in production (see default_auth_fallback_enabled).
     if default_auth_fallback_enabled():
         try:
-            from databricks.sdk import WorkspaceClient
-
-            me = WorkspaceClient().current_user.me()
-            if me.user_name:
-                logger.warning(
-                    "X-Forwarded-Email/Access-Token missing — resolved email via local default "
-                    "auth (%s). Local dev only.",
-                    me.user_name,
-                )
-                return me.user_name
+            return await _resolve_default_auth_user_name()
         except Exception:
             logger.warning("Failed to resolve user email from local default auth", exc_info=True)
 
