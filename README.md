@@ -1,6 +1,13 @@
 DQX by Databricks Labs
 ===
 
+> **About this repository:** a private clone (not a fork) of
+> [databrickslabs/dqx](https://github.com/databrickslabs/dqx) at commit
+> [`b645540a`](https://github.com/databrickslabs/dqx/commit/b645540af3d8cf22972e2313e7d794324c24920d)
+> on `main` (2026-10-05): DQX `v0.16.0` plus 36 commits, before `studio-v0.1.0-rc.4`.
+> It adds a Docker image and an AKS deployment for DQX Studio; see
+> [`app/docker/README.md`](app/docker/README.md).
+
 <p align="center">
     <a href="https://github.com/databrickslabs/dqx">
         <img src="docs/dqx/static/img/logo.svg" class="align-center" width="200" height="200" alt="logo" />
