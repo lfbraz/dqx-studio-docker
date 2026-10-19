@@ -11,7 +11,8 @@ a local Docker engine (Colima, Docker Desktop) or a cloud container platform.
 
 - Docker. With Colima: `colima start --memory 6`.
 - A SQL warehouse and a Lakebase project in the workspace. `setup.sh` creates
-  everything else.
+  everything else. `.env.example` expects the project to be named
+  `dqx-studio-db`; otherwise, set `DQX_LAKEBASE_ENDPOINT` to yours.
 - A Databricks CLI profile for your own admin identity (`<your-profile>` below).
   If the catalog doesn't exist yet, it also needs `CREATE CATALOG` on the
   metastore.
